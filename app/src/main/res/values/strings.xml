@@ -214,6 +214,9 @@
     <string name="clipboard_history_pinned_first">Show pinned items on top</string>
     <!-- Preferences item for extending the clipboard history to files (images or others) -->
     <string name="clipboard_history_files">Add images and other files to clipboard history</string>
+    <!-- Preferences item for adding new screenshots to the clipboard history -->
+    <string name="clipboard_save_screenshots">Save recent screenshots in clipboard</string>
+    <string name="clipboard_save_screenshots_summary">Needs permission to read images. New screenshots are added to the clipboard history and offered in the suggestion strip.</string>
     <!-- Preferences item for selecting maximum combined size of clipboard history files -->
     <string name="clipboard_history_max_file_size">Clipboard size limit</string>
     <!-- Description, used for non-image clipboard files -->

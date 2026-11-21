@@ -28,6 +28,7 @@ import helium314.keyboard.latin.common.Constants
 import helium314.keyboard.latin.common.isValidNumber
 import helium314.keyboard.latin.database.ClipboardDao
 import helium314.keyboard.latin.databinding.ClipboardSuggestionBinding
+import helium314.keyboard.latin.permissions.PermissionsUtil
 import helium314.keyboard.latin.settings.Defaults
 import helium314.keyboard.latin.settings.Settings
 import helium314.keyboard.latin.utils.InputTypeUtils
@@ -46,6 +47,8 @@ class ClipboardHistoryManager(
     private var clipboardSuggestionView: View? = null
     private var clipboardDao: ClipboardDao? = null
     private var tempPrimaryClip = false
+    private var screenshotObserver: ScreenshotObserver? = null
+    private var recentScreenshot: ClipboardHistoryEntry? = null
 
     fun onCreate() {
         clipboardManager = latinIME.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -53,9 +56,40 @@ class ClipboardHistoryManager(
         clipboardDao = ClipboardDao.getInstance(latinIME)
         if (latinIME.mSettings.current.mClipboardHistoryEnabled)
             fetchPrimaryClip()
+        updateScreenshotObserver()
+    }
+
+    /** Starts or stops watching for new screenshots, depending on settings and permission. Cheap, may be called often. */
+    fun updateScreenshotObserver() {
+        val prefs = latinIME.prefs()
+        val enabled = latinIME.mSettings.current.mClipboardHistoryEnabled
+                && prefs.getBoolean(Settings.PREF_CLIPBOARD_USE_FILES, Defaults.PREF_CLIPBOARD_USE_FILES)
+                && prefs.getBoolean(Settings.PREF_CLIPBOARD_SAVE_SCREENSHOTS, Defaults.PREF_CLIPBOARD_SAVE_SCREENSHOTS)
+                && PermissionsUtil.checkAllPermissionsGranted(latinIME, ScreenshotObserver.requiredPermission())
+        if (!enabled) {
+            screenshotObserver?.unregister()
+            screenshotObserver = null
+            recentScreenshot = null
+            return
+        }
+        if (screenshotObserver != null) return
+        screenshotObserver = ScreenshotObserver(latinIME, ::onScreenshot).also { it.register() }
+    }
+
+    private fun onScreenshot(uri: Uri, mimeType: String, name: String) {
+        if (!maySaveFromUri(uri, latinIME)) return
+        val timeStamp = System.currentTimeMillis()
+        val description = ClipDescription(name, arrayOf(mimeType))
+        val dao = clipboardDao ?: return
+        dao.addClipUri(timeStamp, false, uri, description, latinIME)
+        val entry = dao.getAll().firstOrNull { it.timeStamp == timeStamp && it.filename != null } ?: return
+        recentScreenshot = entry
+        dontShowCurrentSuggestion = false
     }
 
     fun onDestroy() {
+        screenshotObserver?.unregister()
+        screenshotObserver = null
         clipboardManager.removePrimaryClipChangedListener(this)
     }
 
@@ -187,6 +221,15 @@ class ClipboardHistoryManager(
         if (!latinIME.mSettings.current.mSuggestClipboardContent) return null
         if (dontShowCurrentSuggestion) return null
         if (parent == null) return null
+        val shot = recentScreenshot
+        if (shot != null) {
+            val primaryTime = clipboardManager.primaryClip?.let { ClipboardManagerCompat.getClipTimestamp(it) } ?: 0L
+            val stillThere = clipboardDao?.getAll()?.any { it.id == shot.id } == true
+            val recent = System.currentTimeMillis() - shot.timeStamp <= RECENT_TIME_MILLIS
+            if (stillThere && recent && shot.timeStamp > primaryTime
+                && !InputTypeUtils.isNumberInputType(editorInfo?.inputType ?: InputType.TYPE_NULL))
+                return createScreenshotSuggestionView(shot, parent)
+        }
         val clipData = clipboardManager.primaryClip ?: return null
         if (clipData.itemCount == 0) return null
         val clipItem = clipData.getItemAt(0) ?: return null
@@ -250,6 +293,44 @@ class ClipboardHistoryManager(
         colors.setColor(closeButton, ColorType.REMOVE_SUGGESTION_ICON)
         colors.setBackground(binding.root, ColorType.CLIPBOARD_SUGGESTION_BACKGROUND)
 
+        clipboardSuggestionView = binding.root
+        return clipboardSuggestionView
+    }
+
+    // like Gboard: a freshly taken screenshot shows up as image in the suggestion strip
+    private fun createScreenshotSuggestionView(shot: ClipboardHistoryEntry, parent: ViewGroup): View? {
+        val binding = ClipboardSuggestionBinding.inflate(LayoutInflater.from(latinIME), parent, false)
+        val imageView = binding.clipboardSuggestionImage
+        imageView.isVisible = true
+        try {
+            imageView.setImageURI(shot.getContentUri(latinIME))
+        } catch (e: Exception) {
+            Log.w(TAG, "error setting screenshot image", e)
+            return null
+        }
+        val textView = binding.clipboardSuggestionText
+        val clipIcon = KeyboardIconsSet.instance.getIconDrawable(ToolbarKey.PASTE.name.lowercase())
+        clipIcon?.setBounds(0, 0, textView.lineHeight, textView.lineHeight)
+        textView.setCompoundDrawablesRelative(clipIcon, null, null, null)
+        val onClickListener = View.OnClickListener {
+            dontShowCurrentSuggestion = true
+            latinIME.mKeyboardActionListener.onContent(shot.getContentInfo(latinIME))
+            AudioAndHapticFeedbackManager.getInstance().performHapticAndAudioFeedback(KeyCode.NOT_SPECIFIED, it, HapticEvent.KEY_PRESS)
+            binding.root.isGone = true
+        }
+        textView.setOnClickListener(onClickListener)
+        imageView.setOnClickListener(onClickListener)
+
+        val closeButton = binding.clipboardSuggestionClose
+        closeButton.setImageDrawable(KeyboardIconsSet.instance.getIconDrawable(ToolbarKey.CLOSE_HISTORY.name.lowercase()))
+        closeButton.scaleX = 0.8f
+        closeButton.scaleY = 0.8f
+        closeButton.setOnClickListener { removeClipboardSuggestion() }
+
+        val colors = latinIME.mSettings.current.mColors
+        clipIcon?.let { colors.setColor(it, ColorType.CLIPBOARD_SUGGESTION_ICON) }
+        colors.setColor(closeButton, ColorType.REMOVE_SUGGESTION_ICON)
+        colors.setBackground(binding.root, ColorType.CLIPBOARD_SUGGESTION_BACKGROUND)
         clipboardSuggestionView = binding.root
         return clipboardSuggestionView
     }

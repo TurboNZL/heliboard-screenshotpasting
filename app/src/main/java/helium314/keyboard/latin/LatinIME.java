@@ -771,6 +771,7 @@ public class LatinIME extends InputMethodService implements
     }
 
     void onStartInputViewInternal(EditorInfo editorInfo, boolean restarting) {
+        mClipboardHistoryManager.updateScreenshotObserver(); // settings or permission may have changed
         super.onStartInputView(editorInfo, restarting);
 
         setGestureDataGatheringMode(editorInfo, restarting);

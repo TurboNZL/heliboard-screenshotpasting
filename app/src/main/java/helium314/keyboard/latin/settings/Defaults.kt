@@ -165,6 +165,7 @@ object Defaults {
     const val PREF_CLIPBOARD_HISTORY_PINNED_FIRST = true
     const val PREF_CLIPBOARD_USE_FILES = true
     const val PREF_CLIPBOARD_FILES_SIZE_LIMIT = 20 // megabytes
+    const val PREF_CLIPBOARD_SAVE_SCREENSHOTS = false // needs permission to read images
     const val PREF_ADD_TO_PERSONAL_DICTIONARY = false
     @JvmField
     val PREF_NAVBAR_COLOR = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
