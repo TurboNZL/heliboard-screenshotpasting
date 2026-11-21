@@ -13,13 +13,24 @@ android {
         applicationId = "helium314.keyboard"
         minSdk = 21
         targetSdk = 37
-        versionCode = 4301
-        versionName = "4.3-beta2"
+        // CI (turboengine build.yml) passes the release version, otherwise the upstream values are used
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 4301
+        versionName = (project.findProperty("appVersionName") as String?) ?: "4.3-beta2"
         ndk {
             abiFilters.clear()
             abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64"))
         }
         proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+    }
+
+    signingConfigs {
+        // public key committed in ci/, so every CI build is signed alike and installs over the previous one
+        if (project.hasProperty("ciKeystore")) create("ci") {
+            storeFile = file(project.property("ciKeystore") as String)
+            storePassword = "android"
+            keyAlias = "turbo"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
@@ -41,6 +52,7 @@ android {
             isMinifyEnabled = true
             isJniDebuggable = false
             applicationIdSuffix = ".debug"
+            if (project.hasProperty("ciKeystore")) signingConfig = signingConfigs.getByName("ci")
         }
         create("runTests") { // build variant for running tests on CI that skips tests known to fail
             isMinifyEnabled = false

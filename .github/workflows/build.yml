@@ -1,0 +1,152 @@
+name: Build
+
+# Adapted from turboengine's prebuilt-release module (Android only, Gradle instead of pnpm/Capacitor).
+# Versions are Year.Month.Update (2026.11.1), tag v<version>, normal releases only (no pre-releases).
+#  - a pull request builds the APK and keeps it as a workflow artifact (nothing is published);
+#  - a push to main publishes a release. If the commit came from a merged pull request whose build is still there, has the
+#    identical source tree and was stamped with the version that is next now, that APK is published as it is
+#    (scripts/ci/reuse-build.mjs). Anything else builds again.
+# Old releases are NEVER deleted (the engine's "keep only the newest releases" step is intentionally left out).
+
+on:
+  pull_request:
+    paths-ignore: ['docs/**', '*.md', 'fastlane/**']
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '*.md', 'fastlane/**']
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.event_name == 'pull_request' && github.ref || 'release' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  version:
+    name: Pick version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+      code: ${{ steps.pick.outputs.code }}
+      reuse: ${{ steps.reuse.outputs.run }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - id: pick
+        run: |
+          Y=$(date -u +%Y)
+          M=$(date -u +%-m)
+          LAST=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
+            --jq "[.[].tagName | select(startswith(\"v$Y.$M.\")) | ltrimstr(\"v$Y.$M.\") | tonumber] | max // 0")
+          N=$((LAST + 1))
+          echo "version=$Y.$M.$N" >> "$GITHUB_OUTPUT"
+          # Android needs an integer that always grows: YY * 1,000,000 + month * 10,000 + update
+          echo "code=$(( (Y - 2000) * 1000000 + M * 10000 + N ))" >> "$GITHUB_OUTPUT"
+          echo "Version $Y.$M.$N"
+      - id: reuse
+        name: Can a pull request build be published as it is?
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            node scripts/ci/reuse-build.mjs --sha "$GITHUB_SHA" --version "${{ steps.pick.outputs.version }}" --workflow build.yml >> "$GITHUB_OUTPUT"
+          else
+            echo "run=" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Record what this build is
+        if: github.event_name == 'pull_request'
+        run: |
+          mkdir meta
+          printf '{"version":"%s","sha":"%s","tree":"%s"}' "${{ steps.pick.outputs.version }}" "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')" > meta/meta.json
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: build-meta
+          path: meta/meta.json
+          retention-days: 30
+
+  android:
+    needs: version
+    if: needs.version.outputs.reuse == ''
+    name: Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon \
+            -PappVersionCode=${{ needs.version.outputs.code }} \
+            -PappVersionName=${{ needs.version.outputs.version }} \
+            -PciKeystore=$GITHUB_WORKSPACE/ci/turbo-debug.keystore
+      - name: Name the file
+        run: |
+          mkdir out
+          cp app/build/outputs/apk/debug/*-debug.apk out/heliboard-${{ needs.version.outputs.version }}-android.apk
+      # Artifacts are only the hand-over to the release job; people download from the Release.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-android
+          path: out/heliboard-${{ needs.version.outputs.version }}-android.apk
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 30 || 1 }}
+      - name: Reports for a failed build
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: '*/build/reports'
+
+  release:
+    name: Publish release
+    needs: [version, android]
+    # Runs when the build succeeded, or was skipped because a pull request's files are reused. Never for a pull request.
+    if: ${{ !cancelled() && !failure() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Get the files (built now)
+        if: needs.version.outputs.reuse == ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: build-android
+          merge-multiple: true
+          path: files
+      - name: Get the files (built by the pull request)
+        if: needs.version.outputs.reuse != ''
+        run: |
+          mkdir files
+          gh run download "${{ needs.version.outputs.reuse }}" --repo "$GITHUB_REPOSITORY" -D files-all
+          find files-all -type f ! -name meta.json -exec mv {} files/ \;
+      - name: List what will be published
+        run: ls -lh files
+      - name: Create the release
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          SHORT="${GITHUB_SHA::7}"
+          if [ -n "${{ needs.version.outputs.reuse }}" ]; then HOW="Published from the build the pull request already made (run ${{ needs.version.outputs.reuse }})."; else HOW="Built from this commit."; fi
+          gh release create "v$VERSION" files/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "HeliBoard (screenshots) $VERSION" \
+            --notes "Commit $SHORT. $HOW
+
+          Install the \`-android.apk\` (allow installing from this source once). It installs as \`helium314.keyboard.debug\`, next to the normal HeliBoard, and later versions update over it.
+          Turn on **Settings > Preferences > Save recent screenshots in clipboard** and allow access to photos."

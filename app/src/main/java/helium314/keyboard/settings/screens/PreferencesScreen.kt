@@ -2,6 +2,15 @@
 package helium314.keyboard.settings.screens
 
 import android.content.Context
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.core.content.edit
+import helium314.keyboard.latin.ScreenshotObserver
+import helium314.keyboard.latin.permissions.PermissionsUtil
 import android.media.AudioManager
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
@@ -83,6 +92,8 @@ fun PreferencesScreen(
         if (clipboardHistoryEnabled) Settings.PREF_CLIPBOARD_USE_FILES else null,
         if (clipboardHistoryEnabled && prefs.getBoolean(Settings.PREF_CLIPBOARD_USE_FILES, Defaults.PREF_CLIPBOARD_USE_FILES))
             Settings.PREF_CLIPBOARD_FILES_SIZE_LIMIT else null,
+        if (clipboardHistoryEnabled && prefs.getBoolean(Settings.PREF_CLIPBOARD_USE_FILES, Defaults.PREF_CLIPBOARD_USE_FILES))
+            Settings.PREF_CLIPBOARD_SAVE_SCREENSHOTS else null,
     )
     SearchSettingsScreen(
         onClickBack = onClickBack,
@@ -208,6 +219,26 @@ fun createPreferencesSettings(context: Context) = listOf(
             },
             range = 1f..1001f,
         ) { ClipboardDao.getInstance(ctx)?.cleanupFiles(ctx.prefs()) }
+    },
+    Setting(context, Settings.PREF_CLIPBOARD_SAVE_SCREENSHOTS,
+        R.string.clipboard_save_screenshots, R.string.clipboard_save_screenshots_summary
+    ) { setting ->
+        val activity = LocalContext.current.getActivity() ?: return@Setting
+        val permission = ScreenshotObserver.requiredPermission()
+        var granted by remember { mutableStateOf(PermissionsUtil.checkAllPermissionsGranted(activity, permission)) }
+        val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+            granted = it
+            if (granted)
+                activity.prefs().edit { putBoolean(setting.key, true) }
+        }
+        SwitchPreference(setting, Defaults.PREF_CLIPBOARD_SAVE_SCREENSHOTS,
+            allowCheckedChange = {
+                if (it && !granted) {
+                    launcher.launch(permission)
+                    false
+                } else true
+            }
+        )
     },
     Setting(context, Settings.PREF_VIBRATION_DURATION_SETTINGS, R.string.prefs_keypress_vibration_duration_settings) { setting ->
         SliderPreference(

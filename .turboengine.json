@@ -1,0 +1,7 @@
+{
+  "engine": { "repo": "TurboNZL/turboengine", "ref": "main (cloned 2026-11-21; pin to a commit when upgrading)" },
+  "modules": ["release-pipeline", "prebuilt-release"],
+  "themes": "off",
+  "moved": { "prebuilt-release": ".github/workflows/build.yml is Android-only and adapted to Gradle; scripts/ci/reuse-build.mjs is copied as is" },
+  "notes": "Fork of HeliBoard (GPL-3.0). Releases are debug-signed with the public key in ci/ so builds update in place. The engine's 'keep only the five newest releases' step is deliberately NOT used: old releases are never deleted. No updaters/appearance/logos modules: this is a keyboard, not a TurboNZL web app."
+}
